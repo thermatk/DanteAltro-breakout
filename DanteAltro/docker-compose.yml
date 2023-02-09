@@ -1,0 +1,215 @@
+version: "3.4"
+
+services:
+  watchtower:
+    image: containrrr/watchtower
+    container_name: watchtower
+    environment:
+      - TZ=${TZ}
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_INCLUDE_STOPPED=false
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_MONITOR_ONLY=false
+      - WATCHTOWER_SCHEDULE=${WATCHTOWER_SCHEDULE}
+      - WATCHTOWER_TIMEOUT=${WATCHTOWER_TIMEOUT}
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    restart: unless-stopped
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./storage:/storage
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+  redis:
+    image: redis
+    container_name: redis
+    expose:
+      - 6379
+    restart: unless-stopped
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+  mariadb:
+    image: mariadb:10.6
+    expose:
+      - 3306
+    container_name: mariadb
+    command: --transaction-isolation=READ-COMMITTED --binlog-format=ROW
+    environment:
+      - MARIADB_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MARIADB_AUTO_UPGRADE=1
+      - MARIADB_DISABLE_UPGRADE_BACKUP=1
+      - MARIADB_DATABASE=nextcloud
+      - MARIADB_USER=nextcloud
+      - MARIADB_PASSWORD=${MYSQL_NEXTCLOUD_PASSWORD}
+      - PGID=${PGID}
+      - PUID=${PUID}
+      - TZ=${TZ}
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    restart: unless-stopped
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./mariadb:/var/lib/mysql
+      - ./storage:/storage
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+  nextcloud:
+    image: nextcloud:apache
+    depends_on:
+     - mariadb
+     - redis
+    expose:
+      - 80
+    container_name: nextcloud
+    environment:
+      - MYSQL_PASSWORD=${MYSQL_NEXTCLOUD_PASSWORD}
+      - MYSQL_DATABASE=nextcloud
+      - MYSQL_USER=nextcloud
+      - REDIS_HOST=redis
+      - MYSQL_HOST=mariadb
+      - NEXTCLOUD_TRUSTED_DOMAINS=dantealtro.${TRAEFIKMAINDOMAIN} nextcloud
+      - TRUSTED_PROXIES=traefik 172.0.0.0/8
+      - OVERWRITECLIURL=https://dantealtro.${TRAEFIKMAINDOMAIN}
+      - OVERWRITEPROTOCOL=https
+      - TZ=${TZ}
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    restart: unless-stopped
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./nextcloud:/var/www/html
+      - /mnt/expandcloud/nextcloud:/var/www/html/data
+      - ./storage:/storage
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+      - traefik.enable=true
+      - traefik.http.routers.nextcloud.entrypoints=websecure
+      - traefik.http.routers.nextcloud.priority=1
+      - traefik.http.routers.nextcloud.rule=Host(`dantealtro.${TRAEFIKMAINDOMAIN}`)
+      - traefik.http.routers.nextcloud.service=nextcloud
+      - traefik.http.services.nextcloud.loadbalancer.server.port=80
+      - traefik.http.routers.nextcloud.middlewares=nextcloud-dav,nextcloud-h
+      - traefik.http.middlewares.nextcloud-dav.replacepathregex.regex=^/.well-known/ca(l|rd)dav
+      - traefik.http.middlewares.nextcloud-dav.replacepathregex.replacement=/remote.php/dav/
+      - traefik.http.middlewares.nextcloud-h.headers.stsSeconds=155520011
+      - traefik.http.middlewares.nextcloud-h.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.nextcloud-h.headers.stsPreload=true
+  nextcloudcron:
+    image: nextcloud:apache
+    depends_on:
+     - mariadb
+     - redis
+     - nextcloud
+    container_name: nextcloudcron
+    entrypoint: /cron.sh
+    environment:
+      - TZ=${TZ}
+      - REDIS_HOST=redis
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    restart: unless-stopped
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./nextcloud:/var/www/html
+      - /mnt/expandcloud/nextcloud:/var/www/html/data
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+  nextcloud-push:
+    image: nextcloud:apache
+    depends_on:
+     - mariadb
+     - redis
+     - nextcloud
+    expose:
+      - 7867
+    container_name: nextcloud-push
+    environment:
+      - PORT=7867
+      - NEXTCLOUD_URL=http://nextcloud  # don't go through the proxy to contact the nextcloud server
+      - TZ=${TZ}
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    restart: unless-stopped
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./nextcloud:/var/www/html
+      - /mnt/expandcloud/nextcloud:/var/www/html/data
+      - ./storage:/storage
+    entrypoint: /var/www/html/custom_apps/notify_push/bin/x86_64/notify_push /var/www/html/config/config.php
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+      - traefik.enable=true
+      - traefik.http.routers.nextcloud-push.entrypoints=websecure
+      - traefik.http.routers.nextcloud-push.rule=Host(`dantealtro.${TRAEFIKMAINDOMAIN}`) && PathPrefix(`/push`)
+      - traefik.http.middlewares.nextcloud_strip_push.stripprefix.prefixes=/push
+      - traefik.http.routers.nextcloud-push.priority=2
+      - traefik.http.routers.nextcloud-push.service=nextcloud-push
+      - traefik.http.services.nextcloud-push.loadbalancer.server.port=7867
+      - traefik.http.routers.nextcloud-push.middlewares=nextcloud_strip_push
+  pihole:
+    container_name: pihole
+    image: pihole/pihole:latest
+    hostname: piholehome
+    restart: unless-stopped
+    ports:
+      - "53:53/tcp"
+      - "53:53/udp"
+      - "80:80"
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    environment:
+      - ServerIP=${PIHOLEIP}
+      - TZ=${TZ}
+      - WEBPASSWORD=${PIHOLEPASS}
+      - PIHOLE_DNS_=1.1.1.1;8.8.4.4
+      - DNSMASQ_LISTENING=all
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ./pihole/pihole:/etc/pihole
+      - ./pihole/dnsmasq.d:/etc/dnsmasq.d
+      - ./storage:/storage
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+  traefik:
+    image: traefik:v2.9
+    container_name: traefik
+    command:
+      - "--certificatesresolvers.http.acme.email=${LETSENCRYPT_MAIL}"
+      - "--certificatesresolvers.http.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.http.acme.tlschallenge=true"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.websecure.http.tls=true"
+      - "--entrypoints.websecure.http.tls.certResolver=http"
+      - "--entryPoints.websecure.forwardedHeaders.insecure=true"
+      - "--log.level=INFO"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedByDefault=false"
+      - "--serverstransport.insecureskipverify=true"
+    restart: always
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/letsencrypt:/letsencrypt
+    ports:
+      - "443:443"
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
