@@ -157,7 +157,12 @@ Set docker subnet:
 sudo nano /etc/docker/daemon.json
 # paste
 {
-    "bip": "172.26.0.1/16"
+  "default-address-pools" : [
+    {
+      "base" : "172.26.0.0/16",
+      "size" : 24
+    }
+  ]
 }
 
 ```
